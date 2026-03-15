@@ -23,14 +23,16 @@ class MatchingEngine {
     this.initPair(symbol);
 
     const book = this.storage[symbol];
+    console.log('book', JSON.stringify(book));
 
     if (side === 'sell') {
-      book.asks.push({ ...order });
-      book.asks.sort((a, b) => a.price - b.price || a.timestamp - b.timestamp);
+      this.storage[symbol].asks.push({ ...order });
+      this.storage[symbol].asks.sort((a, b) => a.price - b.price || a.timestamp - b.timestamp);
     } else {
-      book.bids.push({ ...order });
-      book.bids.sort((a, b) => b.price - a.price || a.timestamp - b.timestamp);
+      this.storage[symbol].bids.push({ ...order });
+      this.storage[symbol].bids.sort((a, b) => b.price - a.price || a.timestamp - b.timestamp);
     }
+    console.log('book after', JSON.stringify(this.storage[symbol]));
 
     // FIX: Call match and return the result
     const trades = this.match(symbol);
@@ -145,6 +147,7 @@ class MatchingEngine {
   }
 
   setState(state) {
+    console.log('setState - state: ', state);
     if (!state) return;
     this.storage = state.storage || {};
     this.history = state.history || { trades: [] };

@@ -47,11 +47,7 @@ class OrderBookClient {
   submitOrder(order) {
     console.log(`[Client] Looking for available peers...`);
 
-    this.peerRpcClient.request(
-      SERVICE_NAME,
-      order,
-      { timeout: parseInt(process.env.ORDER_BOOK_SERVICE_TIMEOUT) || 10000 },
-      (err, result) => {
+    this.peerRpcClient.request(SERVICE_NAME, order, { timeout: parseInt(process.env.ORDER_BOOK_SERVICE_TIMEOUT) || 10000 }, (err, result) => {
         if (err) {
           if (err.message === 'ERR_GRAPE_LOOKUP_EMPTY') {
             console.error('[Error] No peers online. Retrying in 2 seconds...');
@@ -70,6 +66,7 @@ class OrderBookClient {
         }
 
         console.log(`[Success] Order accepted!`);
+        console.log(`   result: ${JSON.stringify(result, null, 2)}`);
         console.log(`   Peer: ${result.peer}`);
         console.log(`   Matches: ${result.matches}\n`);
       }

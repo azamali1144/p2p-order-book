@@ -37,12 +37,16 @@ class OrderBookPeer {
     this.peerRpcServer = new PeerRPCServer(this.lnk, {});
     this.peerRpcClient = new PeerRPCClient(this.lnk, {});
 
+    this.peerRpcServerService = undefined;
+    this.peerPubService = undefined;
+
     // For split-brain resolution
     this.lastLocalMatchTimestamp = Date.now();
 
     // FEATURE: Random ports for multiple instances
     this.ports = {
       pub: Math.floor(Math.random() * 1000) + 10001,
+      sub: Math.floor(Math.random() * 1000) + 10002,
       rpc: Math.floor(Math.random() * 1000) + 11001
     };
 
@@ -66,7 +70,7 @@ class OrderBookPeer {
     this.setupSubscriptions();
     this.setupDiscoveryLogic();
     this.startAnnouncing();
-    this.setupBatchProcessor();
+    // this.setupBatchProcessor();
 
     // Bootstrap after DHT registration
     setTimeout(() => this.bootstrap(), 2000);
@@ -101,7 +105,7 @@ class OrderBookPeer {
       trades.forEach(t => this.engine.recordTrade(t));
 
       // Add to batch buffer
-      this.tradeBuffer.push(...trades);
+      // this.tradeBuffer.push(...trades);
 
       // Persist state
       this.db.save(this.engine.getState());
@@ -110,49 +114,55 @@ class OrderBookPeer {
 
     // FEATURE: Gossip new orders
     if (order.originPeer === this.peerId) {
-      this.peerPub.pub(JSON.stringify({ type: 'LIMIT_ORDER', ...order }));
+      this.peerPubService.pub(JSON.stringify({ type: 'LIMIT_ORDER', ...order }));
     }
 
     return trades;
   }
 
   // FEATURE: Micro-batching reduces network overhead
-  setupBatchProcessor() {
-    setInterval(() => {
-      if (this.tradeBuffer.length === 0) return;
-
-      const batch = this.tradeBuffer.splice(0, this.tradeBuffer.length);
-
-      const payload = {
-        type: 'TRADE_BATCH',
-        originPeer: this.peerId,
-        trades: batch,
-        timestamp: Date.now()
-      };
-
-      this.peerPub.pub(JSON.stringify(payload));
-      console.log(`[Batch] Broadcasted ${batch.length} trades`);
-    }, 100);
-  }
+  // setupBatchProcessor() {
+  //   setInterval(() => {
+  //     if (this.tradeBuffer.length === 0) return;
+  //
+  //     const batch = this.tradeBuffer.splice(0, this.tradeBuffer.length);
+  //
+  //     const payload = {
+  //       type: 'TRADE_BATCH',
+  //       originPeer: this.peerId,
+  //       trades: batch,
+  //       timestamp: Date.now()
+  //     };
+  //
+  //     this.peerPubService.pub(JSON.stringify(payload));
+  //     console.log(`[Batch] Broadcasted ${batch.length} trades`);
+  //   }, 100);
+  // }
 
   setupTransports() {
-    // Start Pub/Sub server
-    const pubService = this.peerPub.transport('client');
-    pubService.listen(this.ports.pub);
+    // Start Pub server
+    this.peerPubService = this.peerPub.transport('server');
+    this.peerPubService.listen(this.ports.pub);
 
     // Start RPC server
-    const rpcService = this.peerRpcServer.transport('server');
-    rpcService.listen(this.ports.rpc);
+    this.peerRpcServerService = this.peerRpcServer.transport('server');
+    this.peerRpcServerService.listen(this.ports.rpc);
 
-    rpcService.on('request', (rid, key, payload, handler) => {
+    this.peerRpcServerService.on('request', (rid, key, payload, handler) => {
       // ORDER SUBMISSION
+      console.log(`[Client] Req ${rid} for event: ${key}`);
+
       if (key === SERVICE_NAME) {
         this.queue.push(payload)
-          .then(trades => handler.reply(null, {
-            status: 'PROCESSED',
-            trades: trades.length,
-            peer: this.peerId
-          }))
+          .then(trades => {
+            console.log(`[Client] Req ${rid} for event: ${key} ->  response: ${JSON.stringify(trades)}`);
+
+            return handler.reply(null, {
+              status: 'PROCESSED',
+              matches: trades.length,
+              peer: this.peerId
+            })
+          })
           .catch(err => handler.reply(err));
         return;
       }
@@ -174,6 +184,7 @@ class OrderBookPeer {
 
   setupSubscriptions() {
     const subscribe = () => {
+      console.log('setupSubscriptions - subscribe: ', ORDER_BOOK_BROADCAST, ': ', process.env.ORDER_BOOK_BROADCAST_TIMEOUT);
       this.peerSub.sub(ORDER_BOOK_BROADCAST, {
         timeout: parseInt(process.env.ORDER_BOOK_BROADCAST_TIMEOUT) || 10000
       });
@@ -195,21 +206,21 @@ class OrderBookPeer {
         }
 
         // FEATURE: Split-Brain Resolution - Handle trade batches
-        if (data.type === 'TRADE_BATCH') {
-          console.log(`[Gossip] Trade batch: ${data.trades.length} trades from ${data.originPeer.slice(0, 8)}`);
-
-          data.trades.forEach(trade => {
-            // Tie-breaker: earlier timestamp or smaller peer ID wins
-            const isEarlier = trade.timestamp < this.lastLocalMatchTimestamp;
-            const isTieAndSmaller = trade.timestamp === this.lastLocalMatchTimestamp &&
-              data.originPeer < this.peerId;
-
-            if (isEarlier || isTieAndSmaller) {
-              const success = this.engine.processExternalTrade(trade);
-              if (success) this.db.save(this.engine.getState());
-            }
-          });
-        }
+        // if (data.type === 'TRADE_BATCH') {
+        //   console.log(`[Gossip] Trade batch: ${data.trades.length} trades from ${data.originPeer.slice(0, 8)}`);
+        //
+        //   data.trades.forEach(trade => {
+        //     // Tie-breaker: earlier timestamp or smaller peer ID wins
+        //     const isEarlier = trade.timestamp < this.lastLocalMatchTimestamp;
+        //     const isTieAndSmaller = trade.timestamp === this.lastLocalMatchTimestamp &&
+        //       data.originPeer < this.peerId;
+        //
+        //     if (isEarlier || isTieAndSmaller) {
+        //       const success = this.engine.processExternalTrade(trade);
+        //       if (success) this.db.save(this.engine.getState());
+        //     }
+        //   });
+        // }
 
       } catch (e) {
         console.error('[Gossip] Parse error:', e.message);
@@ -263,7 +274,7 @@ class OrderBookPeer {
       }
 
       if (networkState && this.isNetworkStateNewer(networkState)) {
-        console.log('[Bootstrap] Applying network state snapshot');
+        console.log('[Bootstrap] Applying network state snapshot', networkState);
         this.engine.setState(networkState);
         this.db.save(networkState);
         console.log('[Bootstrap] State synchronized\n');
@@ -298,17 +309,11 @@ class OrderBookPeer {
 
     // Close transports safely
     try {
-      if (this.peerRpcServer && typeof this.peerRpcServer.stop === 'function') {
-        this.peerRpcServer.stop();
+      if (this.peerRpcServerService && typeof this.peerRpcServerService.stop === 'function') {
+        this.peerRpcServerService.stop();
       }
-      if (this.peerSub && typeof this.peerSub.stop === 'function') {
-        this.peerSub.stop();
-      }
-      if (this.peerPub && typeof this.peerPub.stop === 'function') {
-        this.peerPub.stop();
-      }
-      if (this.peerRpcClient && typeof this.peerRpcClient.stop === 'function') {
-        this.peerRpcClient.stop();
+      if (this.peerPubService && typeof this.peerPubService.stop === 'function') {
+        this.peerPubService.stop();
       }
       if (this.lnk && typeof this.lnk.stop === 'function') {
         this.lnk.stop();
